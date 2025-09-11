@@ -1,0 +1,663 @@
+% \documentclass{article}
+
+\def\draft{0}
+
+%\documentclass[twocolumn, 9pt, a4paper]{extarticle}
+\documentclass[onecolumn, 9pt, a4paper]{extarticle}
+
+% --- Packages (tidied; duplicates removed) ---
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+
+\usepackage{listings}
+\usepackage{caption}
+\usepackage{authblk}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{mathtools}
+\usepackage{tcolorbox}
+\tcbuselibrary{breakable,skins,listings} % <-- add this
+\usepackage{ifdraft}
+\ifdraft{\usepackage{showlabels}}{}
+\usepackage{float}
+\usepackage{dblfloatfix}
+
+\hypersetup{hidelinks, linktoc=all}
+
+\pagecolor{yellow!6}
+
+% --- tcolorbox style for code/algorithms ---
+\newtcolorbox{whitebgbox}{
+  colback=yellow!4,
+  colframe=black!4,
+  boxrule=0.5pt,
+  arc=1mm,
+  breakable,
+  left=1mm, right=1mm, boxsep=1mm,
+  before upper=\begingroup\sloppy, % allow wider interword stretch/shrink
+  after upper=\endgroup,
+}
+
+% --- Notes for draft mode ---
+
+\ifnum\draft=0
+    \newcommand{\authnote}[3]{{\color{#3} {\bf  #1:} #2}}
+\else
+    \newcommand{\authnote}[3]{}
+\fi
+
+\newcommand{\ynote}[1]{\authnote{Yonatan}{#1}{red}}
+\newcommand{\fnote}[1]{\authnote{Freshair}{#1}{blue}}
+\newcommand{\mnote}[1]{\authnote{Michael}{#1}{purple}}
+
+% Listings setup
+\lstdefinelanguage{Rust}{
+  keywords={as, break, const, continue, crate, else, enum, extern, false, fn, for, if, impl, in, let, loop, match, mod, move, mut, pub, ref, return, self, Self, static, struct, super, trait, true, type, unsafe, use, where, while, async, await, dyn},
+  keywordstyle=\color{blue}\bfseries,
+  ndkeywords={u8, u64, Vec, String, Option, Result, Pubkey, Hash, TransactionInput, TransactionOutput},
+  ndkeywordstyle=\color{teal}\bfseries,
+  identifierstyle=\color{black},
+  sensitive=true,
+  comment=[l]{//},
+  commentstyle=\color{purple}\ttfamily,
+  stringstyle=\color{red},
+  morestring=[b]",
+  morestring=[b]',
+}
+
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
+
+\lstdefinestyle{mystyle}{
+  commentstyle=\color{codegreen},
+  keywordstyle=\color{magenta},
+  numberstyle=\tiny\color{codegray},
+  stringstyle=\color{codepurple},
+  basicstyle=\ttfamily\footnotesize,
+  breakatwhitespace=false,
+  breaklines=true,
+  captionpos=b,
+  keepspaces=true,
+  numbers=left,
+  numbersep=5pt,
+  showspaces=false,
+  showstringspaces=false,
+  showtabs=false,
+  tabsize=2,
+  xleftmargin=1.5em,
+}
+
+\lstset{style=mystyle}
+
+% --- Title & Authors (single-line authors + affiliation) ---
+\title{Kaspa Verifiable Programs (vProg) Protocol Specification}
+\date{\textbf{DRAFT v0.0.1}}
+% \date{\textbf{DRAFT v0.0.1} \today}
+
+\author[1]{Msutton}
+\author[1,2]{FreshAir08}
+\author[1]{Hashdag}
+\affil[1]{Kaspa Research}
+\affil[2]{Kaspa Ecosystem Foundation (KEF)}
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Zero-knowledge proof systems enable verifiable off-chain applications, yet application sovereignty is inherently at odds with the need for synchronous composability. 
+The vProg architecture is proposed to resolve this tension by enabling sovereign on-site execution, where the L1 sequencer guarantees data availability while metering the precise computational externality imposed on each vProg by its on-the-fly dependencies. 
+The result is a synchronously composable, zk-based L1/L2 system, leveraging the high-throughput, low-latency Kaspa network as its shared sequencing layer. This document details the architecture, core components, and operational semantics that enable this system.
+\end{abstract}
+
+\tableofcontents
+\clearpage
+
+\section{Introduction}
+
+\subsection{Purpose and Scope}
+This document specifies the Kaspa vProg protocol. The primary objective is to scale the computational capacity of the Kaspa L1 by enabling off-chain execution through verifiable programs (vProgs), validated via zero-knowledge (ZK) proofs.
+
+The protocol is designed to resolve the inherent tension between two critical requirements: maintaining the sovereignty of individual vProgs while enabling synchronous, atomic composability between them to prevent economic fragmentation. 
+
+This initial version of the specification covers the fundamental architecture; many implementation details are reserved for future revisions. 
+
+\subsection{Architecture Overview}
+The vProg protocol is designed to solve the classic challenges of synchronous composability in a decentralized setting: enabling trustless, atomic interactions between sovereign applications without creating computational bottlenecks or sacrificing liveness. The core of the architecture rests on the principle of \textbf{metered, on-site execution}, ensuring vProg sovereignty.
+
+This sovereign model is the protocol's core mechanism for partitioning its computational and state burdens. This provides a direct path to state-size scalability. It also enables the horizontal scaling of computation, as the depth of re-computation required for cross-program dependencies can be minimized by frequent ZK proof submissions.
+
+In this model, vProg sovereignty is achieved by having each program's nodes locally execute the logic of any external vProgs they depend on. To facilitate this, the Kaspa L1 acts as a sequencer and data availability layer. It does not execute vProg logic itself, but critically, it guarantees that all necessary witness data for a transaction is available and calculates the full computational dependency, or ``scope'', that this on-site execution imposes on each vProg. By metering this scope, the L1 can regulate the computational throughput per vProg, preventing any single application from being overwhelmed by the demands of the wider network. 
+
+The witness data supplied by transactions is anchored in zk-proven commitments to the historical states of vProgs. The more frequent proof submissions become, the more ``shallow'' these anchors can become, and in turn the computational and execution externalities imposed by one vProg on the other reduce. This creates a powerful economic incentive for a healthy, active prover ecosystem to keep the system scalable.
+
+Closely intertwined is the coordination of proving efforts. Cross-vProg transactions inherently require that one vProg await a proof for a computation of another before it can finalize proofs of its own state transitions. Indeed, our architecture shines the brightest where there is some degree of cooperation between provers of the distinct vProgs. Crucially though advancing the state commitment of a vProg never depends on any data that cannot be reconstructed locally (though doing so may be less efficient). While reconstructing the required data may not be as efficient as the ``optimistic'' cooperative option, this ``sovereign'' option crucially ensures the liveness of a vProg is never compromised by the fault of others.
+
+The following sections detail the components that enable this model: the L1 consensus modifications, the structure of the Computation DAG (CD) that underpins both scope calculation and proof stitching, the operational flow of transactions, and the economic model that aligns incentives between all participants.
+
+\section{Framework Description}
+
+\subsection{Global Time}
+L1 determines a global time by sequencing 3 distinct types of operations: $\mathsf{Op}\coloneqq\{\textsf{Tx},\textsf{Stitch},\textsf{CondBatch}\}$ detailed respectively in Section~\ref{sec:tx}, Section~\ref{sec:proof-submission} and Section~\ref{sec:cond-batch}. The global, ordered sequence of operations finalized by the L1 is denoted $T = \langle op_1, op_2, \dots \rangle$. 
+
+\subsection{The vProgs Model}
+A verifiable program, or vProg, $p$, is a sovereign application defined by a state transition function $\mathrm{exec}_p$. Each
+vProg exclusively owns a set of accounts, $A_p$, and is solely responsible for authorizing modifications to their
+state. From an architectural perspective, a vProg functions as an independent, verifiable state machine whose state progression is periodically committed to the Kaspa L1.
+
+An account is the fundamental unit of state storage. We denote by $\mathcal{S}_p$ the state space of accounts owned by $p$.
+Only the executable $\mathrm{exec}_p$ of the owning vProg $p$ has write-access to accounts in $A_p$, but its value may be read by any vProg. We
+denote $D_{p,a,t}$ the value of $a$ in $p$ at time $t$. Accounts are referred to as local if they belong to $A_p$, and foreign otherwise.
+The state of a vProg is the union of the latest state of all accounts owned by it, and the global state of the system is the union of the latest state of all accounts.
+
+In this revision of the yellowpaper, we will assume each vProg has a permanent static set of accounts,
+and will not dwell on questions of creation or deletion of accounts.
+
+\subsubsection{vProg Clients and States Cache}
+A client running a vProg’s main purpose is to compute the latest state of all its owned accounts. However
+this latest state of an account may depend on the latest state of accounts in other vProgs, which in turn may
+themselves depend on others---including the past states of local accounts. A historical cache is preserved to
+facilitate execution of these dependencies. This historical cache consists of historical states of local
+accounts, and the states of foreign accounts. 
+
+Crucially, the addition and deletion of states from this cache is to be determined by L1 consensus. In this
+revision of the yellowpaper, we only describe the additions to the cache, but it will be relatively clear that
+historical states do not need be maintained indefinitely. The exact details of pruning these are deferred to a later
+revision of the yellowpaper. 
+
+We denote by $K^t_p$ the set of account states that are maintained in the cache of the vProg client $p$ at time $t$.
+
+\subsection{Transactions}\label{sec:tx}
+A transaction is the atomic operation that drives state transitions in the system. Each transaction explicitly
+declares:
+\begin{itemize}[nosep]
+  \item the set of accounts it intends to read.
+  \item the set of accounts it intends to write to.
+\end{itemize}
+We write \(R(\mathrm{tx})\) for the declared read set and \(W(\mathrm{tx})\) for the declared write set of transaction \(\mathrm{tx}\).
+
+This declaration allows L1 to pre-compute the dependency graph and guarantees that all writes are controlled
+under a single state machine.
+
+\paragraph{General model.} In principle, a transaction could update accounts across multiple vProgs. Conceptually, this
+would amount to splitting it into smaller subtransactions, each executed by the relevant vProg. The outputs of
+one would serve as inputs to the next, until all declared writes are resolved.
+
+\paragraph{Restriction in This Revision.} To avoid the detail clutter of subtransactions syntax in this early revision, we restrict for now to the case where all writes belong
+to a single vProg, called the Writer vProg $p_w$.\footnote{The general case is in a sense the essence of atomic composability, and will need to be described in detail. Nevertheless, the restricted model suffices to describe the core primitives, from which the generalization to the multi-writer case follows directly. This generalization conceptually involves a composition of conditional proofs, where an ``outer'' vProg's proof is conditioned on the certified outputs of an ``inner'' vProg. A sketch of describing the general case where multiple writers are present can be viewed in the research forum \url{https://research.kas.pa/t/a-basic-framework-for-proofs-stitching/323}.}
+The transaction may still read from many vProgs, but only $p_w$
+actually updates its accounts. Execution is simply:
+\[
+T_{\mathrm{txid}}(R,i)=\mathrm{exec}_{p_w}(R,i),
+\]
+where $R$ are the declared read states, $i$ represents auxiliary inputs (calldata, signatures, etc.), and $\mathrm{exec}_{p_w}$ is the
+deterministic state transition function of $p_w$. The result is a set of new values for the accounts in $W\subseteq A_{p_w}$.
+
+\subsection{Stitching Proofs and vProg State Index}\label{sec:proof-submission}
+Commitments of the form $(p,t)\mapsto C^t_p$ are mapped in a structure called the vProg state index. The commitments represent recent states of the various vProgs. New commitments can be added to this structure via an operation called a stitching proof (see Algorithm~\ref{alg:stitching}).
+
+\paragraph{Commitment Submission.} 
+Each new submission to it satisfies:
+\begin{enumerate}[nosep]
+  \item \emph{Monotonic time:} If the latest accepted commitment for $p$ is $C^s_p$, then the new submission must have $t>s$.
+  \item \emph{Full coverage of current ownership:} $C^t_p$ must commit to the latest state at time $t$ of every account
+  owned by $p$.
+  \item \emph{Historical continuity:} $C^t_p$ must also commit to any intermediate states of $p$’s owned accounts for every
+  timestamp $t'$ with $s<t'\le t$ (inclusive of $t$, exclusive of $s$). 
+  \item \emph{Efficient attestation:} The commitment must support succinct membership/opening proofs (e.g., Merkle/accumulator based) so that an L1 verifier can check any claimed value for any $(\text{account},t')$ with logarithmic
+  (or similarly sublinear) witness size and verification cost.
+\end{enumerate}
+
+\paragraph{Pruning Note.} Once a commitment $C^t_p$ is sufficiently buried, the prior entries and intermediate
+material in it is potentially redundant and thus the commitment can be pruned from the structure; exact policies are out of scope for this revision.
+
+\paragraph{vProg Genesis Note.}  More discussion is required on the initialization of a slot for a vProg in this state index. This discussion is reserved for future versions.
+
+\subsection{Conditional Proof Batches}\label{sec:cond-batch}
+\paragraph{Conditional Proofs.} A conditional zk-proof attests to the outputs of a transaction writing to vProg $p$, conditioned on its inputs.
+Several such standalone proofs of the same vProg can be batched together to a primitive called \emph{conditional
+proof batch}, which arranges the commitments of each individual proof in a Merkle tree, and supplies a zk-proof
+attesting that the Merkle root forms the root of a valid tree where each leaf is individually zk-proven.
+
+\subsection{The Computation DAG (CD)}\label{sec:cd}
+The flow of state dependencies between accounts is modeled as a directed acyclic graph (DAG), the Computation
+DAG (CD). The structure of this graph is determined dynamically by the global sequence of transactions finalized
+by the L1 and serves as the canonical reference for all L2 proof verification. The CD will serve two distinct primary
+functions: facilitating static inference of (a bound on) the excess computation imposed on a given vProgs by
+computations in the jurisdiction of other vProgs (Section~\ref{sec:scopegas}), and defining the dependency graph
+for L2 proof stitching, as expanded in Algorithm~\ref{alg:stitching}.
+
+\paragraph{Vertices.} The CD contains two types of vertices:
+\begin{itemize}[nosep]
+  \item \emph{Account State Vertex $(V)$:} Represents the state of an account at a specific logical time. Its ID is a tuple $((pid,aid),t)$. We denote such a vertex by $v^{\mathrm{acc}}_{pid,aid,t}$. For conciseness, we use the notation $v^{\mathrm{acc}}_{pid,aid,\leq s}$ to refer to the latest state of an account \textit{as of} a specific time $s$. This denotes the most recent state vertex of account $(pid,aid)$ at or before logical time $s$. Formally, this means $v^{\mathrm{acc}}_{pid,aid,\leq s} \coloneqq v^{\mathrm{acc}}_{pid,aid,t}$ where $t \le s$ is the maximal timestamp for which such a vertex exists.
+  \item \emph{Transaction Vertex $(\tau)$:} Represents a transaction, identified by its L1 transaction ID, $(\mathrm{txid})$ and time $t$. We write $v^{\tau}_{\mathrm{txid,t}}$ and view it as a function node consuming reads and producing writes.
+\end{itemize}
+
+
+\paragraph{Edges $(E)$.} A transaction vertex has incoming edges from the account state vertices it reads and outgoing edges to the new account state vertices it creates. Formally, for a transaction $\mathrm{tx}$ finalized at time $t$ and represented by the vertex $v^{\tau}_{\mathrm{txid,t}}$:
+\begin{itemize}[nosep]
+    \item For each account $(p,a) \in R(\mathrm{tx})$, an incoming edge is added from $v^{\mathrm{acc}}_{p,a,\leq t-1}$ to $v^{\tau}_{\mathrm{txid,t}}$.
+    \item For each account $(p,a) \in W(\mathrm{tx})$, an outgoing edge is added from $v^{\tau}_{\mathrm{txid,t}}$ to the newly created vertex $v^{\mathrm{acc}}_{p,a,t}$.
+\end{itemize}
+
+
+
+\paragraph{Notation Note.} A natural structure for this graph would be a hypergraph where transactions act as hyperedges
+connecting account state vertices. However for the purpose of describing the stitching process it
+is simpler to represent every transaction as a vertex, with outgoing edges to its write set, and ingoing
+edges from its read set. 
+
+\subsubsection{Computational Scope and Transaction Anchoring}
+The value of an account vertex $v$ in the CD is determined by its predecessor transaction vertex and the values of that transaction’s inputs. However, a vProg client typically only holds a limited subset of account states, denoted $K_p^{t{-}1}$. This subset does not necessarily include all the vertices required to execute the transaction’s declared read set. In some cases the missing values can be derived from $K_p^{t{-}1}$ alone, but often they cannot. 
+
+To guarantee data availability for every vProg, transactions are therefore required to supply additional historical values sufficient to reconstruct their read set. These additional values are called \emph{anchors}. A transaction is deemed invalid if it fails to provide anchors covering all missing dependencies. An anchor value must ground itself to a vertex familiar to a commitment in the vProg state index. This familiarity is enforced by the L1 (see Section~\ref{sec:tx-witness-verify}).
+
+% For validity, anchors must refer only to states that have already been committed to the vProg state index. Each anchor must be accompanied by a witness demonstrating extraction of the stated value from its corresponding commitment, together with a reference to that commitment in the vProg state index. L1 verifies these witnesses; any failure likewise leads to rejection of the transaction.
+
+% The value of an account vertex $v$ in the CD is determined by its predecessor transaction vertex and the values of that transaction’s inputs. However, a vProg client typically only holds a limited subset of account states, denoted $K_p^{t-1}$. This subset need not include all the vertices required to execute the transaction’s declared read set. To guarantee data availability for every vProg, transactions are therefore required to supply additional historical values sufficient to reconstruct their read set. These additional values are called \emph{anchors}. Transactions must provide sufficient anchors to bound their computational scope; an insufficient set of anchors can result in a scope so large that its calculated gas cost exceeds local L1 limits, leading to L1 rejection.
+
+Once a transaction's anchors are verified, a vProg node determines the computational scope by performing a backwards traversal on the CD, starting from the transaction's read set. The traversal along any path halts immediately upon reaching any vertex that is either (1) one of the transaction-supplied anchors, or (2) already present in the vProg's local cache, $K_p^{t-1}$.
+
+The subgraph consisting of all vertices (both account state and transaction) and edges discovered during this traversal constitutes the \textbf{scope} for vProg $p$ with respect to the transaction at time $t$, denoted $\mathrm{scope}(p,t)$. It represents the exact dependency graph the vProg must process to derive the values of the transaction's inputs. This may involve the vProg locally executing the logic of parent transactions within the scope, even if those transactions belong to foreign vProgs. The set of new account state vertices within the scope, denoted $V_{\text{scope}}(p,t)\coloneqq scope(p,t)\!\restriction_V$, corresponds precisely to the increment to the vProg's cache:
+\[ K^{t+1}_p= K^t_p\cup V_{\text{scope}}(p,t)
+\]
+
+Finally, note that L1 nodes can and will calculate the set (but not the data) $\mathrm{scope}(p,t)$ for each transaction and vProg. This allows L1 to act as a scheduler, regulating computational throughput per vProg and preventing any single vProg from being overloaded by cross-program dependencies.
+
+\subsubsection{Computation DAG Commitments}\label{sec:cd-commitments}
+To allow attesting for continuity of its structure, each vertex in the Computation DAG is mapped to a hash via
+the following recursive rules:
+\begin{align*}
+\mathrm{H}(v_{\mathrm{acc}})&=\mathrm{H}\big(\mathrm{H}(v_{\mathrm{tx}\, \text{parent}})\ \Vert\ (pid,aid)\ \Vert\ t\big),\\
+\mathrm{H}(v_{\mathrm{tx}})&=\mathrm{H}\big(\mathrm{H}(v^{\mathrm{acc}}_{\mathrm{pred} 1})\ \Vert\ \cdots\ \Vert\ \mathrm{H}(v^{\mathrm{acc}}_{\mathrm{pred} n})\ \Vert\ \mathrm{txid}\big).
+\end{align*}
+This recursive hashing creates a unique, verifiable commitment for any vertex and its entire causal history,
+which will be fundamental for proof stitching. Unlike the potentially fragmented compute scopes calculated by
+L1, the proving process will require a complete and continuous segment of the CD to be covered by proofs,
+ensuring the integrity of the state transition between two L1-anchored commitments. 
+
+\section{L1 Consensus Modifications}
+
+\subsection{ZK Verify Capabilities}
+Kaspa will require new capabilities to allow it to run ZK verifications. The precise mechanics of how this capability
+will be enabled are under consideration. The cleanest option considered was the introduction of designated ZK
+opcodes, alongside opcodes for transaction inspection (covenants). See \href{https://research.kas.pa/t/on-the-design-of-based-zk-rollups-over-kaspas-utxo-based-dag-consensus/208}{[1]}, \href{https://research.kas.pa/t/l1-l2-canonical-bridge-entry-exit-mechanism/258}{[2]}. Due to the need of L1
+to be explicitly informed of state commitments of the various vProgs, at various times (to allow for anchors
+verification), this option is no longer as natural, and more intrusive options might be considered.
+
+\subsection{Resource Metering}
+Consensus will regulate two new types of masses, in addition to the existing compute mass (regulating computations done by the L1), permanent storage mass and transient storage mass. The new masses are referred to as L2 gas\footnote{ In the restricted model, each transaction has only a single writer vProg $p_w$, so representing L2 gas as a vecotr is unnecessary. We nevertheless adopt this representation in order to preserve consistency with the full model, where the vector form is essential: the scope gas calculation depends on the aggregate contributions of L2 gas across all writer vProgs throughout the scope, and referring to L2 gas as a scalar fails to emphasize this aspect of its calculation.}, and L2 scope gas. Both of these new types are in practice a sparse vector indexed by the various vProgs existing in the system, each entry regulated separately. Transactions will commit to a bound of spending on both types of gas. The implications of these commitments however are distinct: the scope gas commitment will be verified by the merging block, and cause a rejection of the transaction in case of a failure (in any coordinate)\footnote{In upcoming revisions, this per-transaction commitment model may be revised. An alternative approach is for the merging block to deterministically calculate the scope gas for each transaction and include transactions up to the including block's own capacity limit, dropping those that do not fit, without requiring a user-declared commitment.}. The L2 gas however is an L2 inner construct merely regulated by L1, and L1 itself will be oblivious to any failure to meet the L2 commitment.  
+
+\subsubsection{L2 Gas}
+This is a vProg-specific resource metric, defined and priced by each sovereign vProg to manage its internal execution and state costs. The \texttt{GasPayments} map in a \texttt{Transaction} represents the user’s payment for this L2 resource, which is ultimately to be claimed by the vProg’s prover. This gas measure represents (a bound on) the internal execution in the vProg prover, excluding all the external calculations of foreign accounts occasionally required to derive a transaction’s dependencies. In turn this measure represents the proving cost of the transaction in that vProg. L1 blocks regulate the L2 gas per vProg so it will not exceed a predetermined bound, possibly differing between different vProgs. 
+We will refer to the sum of its L2 gas on every vProg as the total gas of a transaction.
+
+
+\subsubsection{ScopeGas}\label{sec:scopegas}
+The scope gas  represents the L1-verifiable
+computational load that a transaction’s scope imposes on a full node of $p$ for state reconstruction.
+Recall that \(\tau\) denotes the set of transaction vertices. Then
+\[
+\mathrm{ScopeGas}(\mathrm{tx},p) \;=\; \sum_{v \in \big(\mathrm{Scope}(p,\mathrm{tx}) \cap \tau\big)} v.\mathrm{total\_gas},
+\]
+The merging block validates the user-declared bound for scope gas; if exceeded in any coordinate, the transaction is deemed invalid.
+
+\subsection{vProg State Index and Stitching Covenant}
+The L1 maintains the vProg State Index.
+A canonical covenant manages the vProg State Index. This covenant specifies the rules under which
+a new state commitment $C^t_p$ is accepted into the vProg State Index.
+
+\subsubsection{Transaction Anchors Verification}\label{sec:tx-witness-verify}
+L1 consensus rules are extended to include the verification of transaction anchors, leveraging the \emph{historical continuity} of state commitments. For each \texttt{Anchor} in a \texttt{Transaction}, L1 performs a two-step verification. First, it uses the \texttt{state\_timestamp} ($t'$) to look up the corresponding state commitment, $C^p_{t'}$, in its local vProg State Index. Second, it verifies the provided \texttt{proof} against this commitment. The proof must cryptographically attest that the commitment $C^p_{t'}$ includes the historical fact that the given \texttt{account} had the specified \texttt{value} at the intermediate \texttt{anchor\_timestamp} ($t \le t'$). A transaction is considered structurally valid only if all of its anchors are successfully verified.
+
+\subsection{DAG Maintenance and Scope Calculation}
+L1 nodes will be responsible for maintaining the topological structure of the Computation DAG based on the
+finalized transaction sequence. Upon validating a transaction $\mathrm{tx}_t$, the L1 node adds a new transaction vertex $v_{\mathrm{tx}}$
+and its corresponding new account state vertices $v_a$ to the graph. As we detail below, L1 will also be responsible
+for managing the known set of vertices for each vProg and regulating the scopes of transactions, as well as
+computing and storing hashes for ``tips'' of the Computation DAG.
+\subsubsection{Transaction Scope Maintenance}
+A critical consensus rule is introduced to handle the dynamic nature of transaction ordering in the blockDAG.
+A merging block, which finalizes the order of transactions from parallel blocks, calculates the scope of each
+transaction and its ScopeGas based on its final position in the sequence. If a transaction’s calculated ScopeGas
+for any vProg exceeds its corresponding commitment, it is deemed invalid. This rule prevents scope explosion attacks and ensures the deterministic
+regulation of vProg throughput. 
+
+L1 maintains only \emph{metadata} sufficient for deterministic scope calculation; it does not store account values. Concretely, each account-state vertex \(v\) carries a list \(v.\mathsf{stateful\_vprogs}\) (the vProgs that already know \(v\)'s value). During sequencing, for each writer vProg \(p\) in the write set, the L1 traverses predecessors down the CD until (i) the transaction’s ScopeGas commitment would be exceeded, (ii) a vertex with \(p \in \mathsf{stateful\_vprogs}\) is reached, or (iii) an on-chain anchor supplied by the transaction is encountered. Successful traversal marks newly discovered vertices as known to \(p\) by updating \(v.\mathsf{stateful\_vprogs}\).
+
+\subsubsection{DAG Root Maintenance}
+A vertex \(v^{\mathrm{acc}}_{p,a,t'}\) is \emph{proven} once a commitment \(C^t_p\) accepted into the vProg State Index covers it, where \(t' \le t\). Prior to this, it is \emph{unproven}. To maintain a succinct commitment to the set of all unproven vertices in the CD, each L1 block header contains a DAG Root.
+
+This root is constructed from a two-tiered Merkle structure:
+\begin{enumerate}[nosep]
+  \item \textbf{Account Write Tree:} For each vProg $p$, an Account Write Tree tracks its set of \emph{live accounts} (i.e., accounts with at least one unproven state). The leaves of this tree consist of the single \textbf{latest} unproven state vertex for each of these live accounts. At a given L1 time $t$, the leaf for a live account $a$ is precisely the vertex $v^{\mathrm{acc}}_{p,a,\leq t}$. The root of this tree is denoted $R_p$.
+  \item \textbf{vProg Tree:} The DAG Root is the Merkle root of all $R_p$ across all live vProgs: $\Psi=\mathsf{MerkleRoot}\big(\{R_p\}_{p\in \mathcal{P}}\big)$.
+\end{enumerate}
+
+\paragraph{Live Accounts Note.} it will be worthwhile to consider regulating the amount of live accounts permitted per vProg. To be discussed in future revisions.
+
+
+\section{vProg Covenants}
+The pegging of a vProg in L1 will be enforced by two covenants with ZK capabilities:
+
+\subsection{Batches Verifier}
+This covenant is responsible for verifying conditional proof batches submitted with its id. The covenant is defined by a verification key $vk$ created via standard methods to correspond to the executable $exec_p$.
+
+\subsubsection{Conditional Batches}\label{sec:conditional_batch_verification}
+A \emph{conditional batch} publishes a Merkle root \texttt{ProofsRoot} committing to a set of conditional statements regarding the transactions of a single vProg $p$.
+
+\begin{lstlisting}[language=, caption={Abstract Proof Structures}]
+type Hash = [u8; 32];
+
+struct ConditionalProof {
+    ConditionHash: Hash,
+    ResultHash: Hash,
+    TxnHash: Hash,
+    ProgID: vProgID,
+}
+
+struct ConditionalBatch {
+    ProofsRoot: Hash, // Merkle root over encoded ConditionalProof leaves
+}
+\end{lstlisting}
+
+The \texttt{ConditionHash} is a commitment to the set of all account states read by the transaction, $R(tx)$. Let $D(a)$ be the state data of an account $a$. The hash is computed as:
+\begin{equation}
+C = H(\dots \mathbin{\|} (p_i, a_i, D(a_i)) \mathbin{\|} \dots)
+\end{equation}
+where the tuples are concatenated in a deterministic, lexicographical order. The \texttt{ResultHash} is computed similarly over the written accounts $W(tx)$.
+
+\subsubsection{Conditional Batch Proof Verification}
+A conditional batch proof operation must supply along it a zk-proof for its validity.
+The submitted zk-proof must establish that:
+\begin{enumerate}
+  \item \textbf{Well-formed Merkleization.} the public input \texttt{ProofsRoot} is the Merkle root of a tree whose leaves are byte-encodings of \texttt{ConditionalProof} records with fields \texttt{(ConditionHash, ResultHash, TxnHash, ProgID)}.
+  \item \textbf{Single-vProg scope.} Every leaf represents a transaction with \texttt{ProgID} $= p$.
+  \item \textbf{Per-leaf statement shape.} Each leaf represents “the execution of the program $exec_p$ embedded on the verification key on the transaction with id $txid$ \emph{conditioned} on the declared reads results in the declared writes” i.e., the proof system enforces the conditional-validity semantics tied to \texttt{ConditionHash} and \texttt{ResultHash}, without asserting anything about other vProgs or global finality.
+\end{enumerate}
+It is emphasized that this covenant does not require the off-chain leaves for verification; it only checks the zk-proof that binds them to \texttt{ProofsRoot} and $p$.
+
+
+\subsection{Stitching Covenant}\label{sec:vprog_covenant}
+This covenant's main responsibility is to sanction commitment submissions to the vProg index. New commitments will only enter the index if they are authorized by this covenant.
+
+\subsubsection{Stitching Proof}\label{sec:stitching_proof_operation}
+A \emph{stitching proof} operation publishes a new state commitment for a vProg, together with evidence that the transition is consistent with conditional proofs and previously attested anchors.
+
+\begin{lstlisting}[language=, caption={Abstract Stitching Proof Structure}]
+type Hash = [u8; 32];
+type MerkleProof = Vec<byte>;
+
+struct BatchRef {
+    ProofsRoot: Hash,         // batch Merkle root
+    HeaderRef: Hash,          // block header reference
+    TxInclusion: MerkleProof, // proof of inclusion in HeaderRef
+}
+
+struct RefPointer {
+    ProgID: vProgID,          // q_j
+    Time: u64,                // r_j
+}
+
+struct StitchingProof {
+    ProgID: vProgID,          // primary vProg (p)
+    NewCommitment: Hash,      // C^p_t
+    DAGRoot: Hash,            // psi^p_t
+    StartTime: u64,           // s
+    EndTime: u64,             // t
+    VProgTreeWitness: MerkleProof, // psi^p_t \in Psi_t witness
+
+    RefPointers: Vec<RefPointer>,  // {(q_j, r_j)} references
+    Batches: Vec<BatchRef>,        // conditional batch roots + inclusion
+
+
+    ZkProof: Vec<byte>,            // proof of stitching predicate
+}
+\end{lstlisting}
+
+The covenant validates the proof inputs as follows:
+\begin{itemize}
+  \item \textbf{Primary start.} Fetch the latest commitment $ C^p_s$ to the primary vProg from the index. Verify \texttt{StartTime} $=s$, and bind this to the zk input.
+  \item \textbf{End time and vProg-tree inclusion.} Require \texttt{EndTime} $\coloneqq t>s$; verify \texttt{VProgTreeWitness} fetch the vProg tree commitment of the block merging  time  $t$  and verify $\psi^p_t=\texttt{DAGRoot}$ is included in that commitment.
+  \item \textbf{Foreign/historical commitments.} For each $(q_j,r_j)\in\texttt{RefPointers}$, fetch $C^{q_j}_{r_j}$ from the index, compute the hash
+  $\texttt{RefCommitmentsHash}=H(\{C^{q_j}_{r_j}\}_j)$ in canonical order.
+  \item \textbf{Batch roots.} For each \texttt{BatchRef}, verify \texttt{TxInclusion} attests that \texttt{ProofsRoot} is on-chain in the block with \texttt{HeaderRef}. Hash all proofsRoots together to derive \texttt{CondsRoot}.
+  \item \textbf{Stitching predicate.} Finally, verify \texttt{ZkProof} under the stitching circuit with public inputs 
+  $$(s,C^p_s,C^p_t,\psi^p_t,\texttt{RefCommitmentsHash},\texttt{CondsRoot}).$$
+\end{itemize}
+
+\paragraph{vProg MetaState Note.} The structural checks of both \texttt{RefCommitmentsHash} and \texttt{BatchRef} in the covenant, consisting of supplying and hashing many items together, may not conform to bandwidth and computational feasibility requirements\footnote{Concretely, these feasibility requirements arise from the design of L1 scripting, which does not support features like loops required to iterate over a variable number of inputs.} if many distinct commitments or conditional batches will be required. 
+We consider this scenario likely. We sketch out one option to address it, to be detailed in future versions. The main idea is to delegate the computational and bandwidth load required to the stitching predicate.
+To enable this, each vProg commitment should commit not to its client state directly, rather to a ``metastate'' enveloping it. This metastate will keep track of the proofs (stitching and conditional batches) submitted on chain, and maintain corresponding inner commitments for the proofs within its metastate. These inner commitments could then be deciphered using the private witnesses supplied during proof stitching. To ensure the metastate is itself updated in a deterministic manner, it may be required that L1 maintain a separate ``sequencing commitment'' for proof operations. This too shall be detailed in future versions.
+
+\paragraph{Stitching Algorithm.} The logic of the stitching predicate, detailed in Algorithm~\ref{alg:stitching}, consists of three main phases. First, the predicate performs structural validation on the private inputs, ensuring all provided witnesses and proofs are valid against their corresponding public commitments. Second, it reconstructs the computational history of the segment by processing the conditional proofs in order, using the supplied witnesses to resolve all dependencies. Finally, it verifies that this fully reconstructed history correctly results in the proposed new state commitment ($C_p^t$) and DAG root ($\psi_t^p$).
+
+\newpage
+\begin{figure*}[!t]
+\begin{whitebgbox}
+\begin{algorithm}[H]
+\caption{Stitching predicate}\label{alg:stitching}
+\begin{algorithmic}[1]
+\Require
+    \State $s$: starting sequence time of the segment
+    \State $C_{s}^{p}$: state commitment for principal vProg $p$ at time $s$
+    \State $C_{t}^{p}$: proposed state commitment for $p$ at time $t$
+    \State $\texttt{RefCommitmentsHash}$: state commitment hash for secondary vProgs, or historical states of the primary
+    \State $\psi_{t}^{p}$: the \texttt{DAG\_Root} of $p$ at time $t$
+    \State $\texttt{CondsRoot}$: Merkle root of conditional proof batches
+    \State \textit{Private Inputs:}
+    \State \quad \texttt{State Commitments} $\{C_{r_j}^{q_j}\}_j$, the unhashed state commitments
+    \State \quad \texttt{seg}: CD segment data from time $s$ up to tips covered by $\psi_{t}^{p}$
+    \State \quad \texttt{anchors}: map indexed by $(p',t')$ with state value and opening witness under the corresponding commitment
+    \State \quad \texttt{conds}: ordered set of conditional proofs with inclusion witnesses under $\texttt{CondsRoot}$
+    \State \quad \texttt{InitialStateView}: A set of Merkle proofs against the public state root $C_p^s$, revealing the leaves and branches for all state portions relevant to the segment's execution.
+\Ensure
+    \State A valid ZK proof that the transition from $C_{s}^{p}$ to $C_{t}^{p}$ is correct
+\Procedure{GenerateStitchingProof}{}
+
+    \vspace{0.5em}
+    \Statex \textit{ /* Phase 1: Verify private input integrity */}
+    
+    \State \textbf{Verify} that the state commitments hash correctly into $\texttt{RefCommitmentsHash}$
+    \State \textbf{Verify} that all proofs in \texttt{InitialStateView} are valid against the public state root $C_p^s$.
+    \State \textbf{Verify} \texttt{seg} obeys hash rules (Section~\ref{sec:cd-commitments}) 
+    \ForAll{$c \in \texttt{conds}$}
+        \State \textbf{Verify} inclusion witness of $c$ under $\texttt{CondsRoot}$
+    \EndFor
+    
+    \ForAll{$(key,val) \in \texttt{anchors}$} \Comment{Verify anchors validity}
+        \State \textbf{Verify} opening witness attests that vertex $key$ has value $val$ under its referenced commitment\footnote{In particular, this verifies $key$ is an account-state vertex }
+    \EndFor
+
+    \vspace{0.5em}
+    \Statex \textit{/* Phase 2: Construct a continuous stitched set of account vertices */}
+    
+    \State Initialize $\texttt{seg\_map} \gets \emptyset$
+    \ForAll{$c \in \texttt{conds}$}
+        \State \textbf{Verify} $c$ is structurally consistent with \texttt{seg}: it commits to a txn $tx$, read set $\mathsf{ReadVertices}(tx)$, write set $\mathsf{WriteVertices}(tx)$, and $\mathrm{ProgID}=p$
+        \ForAll{$u \in \mathsf{ReadVertices}(tx)$}
+            \If{$u \in \texttt{seg}$ \textbf{and} \textit{some parent of $u$ is not in} \texttt{seg}}
+                \State \textbf{Require} $u \in \texttt{anchors}$; set $\texttt{seg\_map}[u] \gets \texttt{anchors}[u]$
+            \Else
+                \State \textbf{Require} $\texttt{seg\_map}$ contains $u$ and its value matches $c$'s \texttt{ConditionHash} opening
+            \EndIf
+        \EndFor
+        \ForAll{$w \in\mathsf{WriteVertices}(tx)$}
+            \State Set $\texttt{seg\_map}[w] \gets \text{value opened from } c.\texttt{ResultHash}$
+        \EndFor
+    \EndFor
+    
+    \vspace{0.5em}
+    \Statex \textit{/* Phase 3: Verify final public outputs */}
+    
+    \State \textbf{Verify} that the key set of $\texttt{seg\_map}$  is equal to  $\texttt{seg}$
+    \State Let $\texttt{upd}$ be the set of local accounts written to within $\texttt{seg}$.
+    \State \textbf{Verify} that $C_p^t$ is the resulting Merkle root after using the \texttt{InitialStateView} as a template, applying the latest writes from $\texttt{upd}$, and propagating the updated hashes to the root.
+    \State \textbf{Verify} that the latest writes of any account in $\texttt{upd}$ hash to $\psi^p_t$
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+\end{whitebgbox}
+\end{figure*}
+
+It is emphasized that the logic of individual transactions is already assumed verified in the conditional batches. The stitching covenant is hence oblivious to features of the vProgs, beyond their ID. The verification key of advancing the various vProgs can very well be a shared one.
+
+\section{vProgs Specification}\label{sec:vProg_prover}
+
+\subsection{vProg Code Availability}
+The on-site execution model assumes that any vProg node has access to the contract code of any other vProg it needs to interact with. A protocol for vProg contract publication and P2P synchronization will be required. The specification for this protocol will be provided in a future version of this paper.
+
+\subsection{Deterministic State Derivation Rules}
+A vProg's state transition function must be deterministic and based solely on the L1 transaction sequence.
+Each vProg defines its own internal gas model and fee structure, allowing it to regulate its own resources and create a market for its blockspace.
+
+\subsection{Composability}
+Each vProg is free to determine which foreign vProgs it considers acceptable sources of read data. Ideally, this vetting should not be a static whitelist of individual programs, but rather a structured approval of standard vProg infrastructures that the vProg is willing to interoperate with. The resulting pattern of approvals naturally forms a directed graph of read dependencies between vProgs.
+
+Importantly, the Kaspa L1 Computation DAG is agnostic to these choices. From the perspective of L1, all transactions are valid as long as they obey structural rules: a transaction may declare reads from any vProg and writes to its writer vProg. Whether or not such a read is \emph{semantically} acceptable depends entirely on the writer vProg’s own rules.
+
+Concretely, a transaction that attempts to write to a vProg $p$ but also reads from a foreign vProg that $p$ has not approved may still appear structurally valid to L1, and may even force $p$ to compute scope for those reads. However, upon execution, $p$ will reject the transaction internally as invalid, and its declared writes will fail.
+
+Finally, by the directed nature of dependencies, no vProg will ever be forced to compute or rely on the value of an unapproved account in order to derive the correct value of any approved account. Composability thus remains strictly under the control of each vProg.
+
+\subsection{Account Creation}
+To be detailed in future revisions.
+
+\subsection{Clients Cache Pruning}
+To be detailed in future revisions.
+
+\section{Provers}
+Provers are for-profit entities responsible for creating stitching proofs and conditional batch proofs. Provers are expected to specialize in the proofs of a particular vProg or set of vProgs.
+
+\subsection{Economic Model}
+Provers’ compensation is to be managed by the vProgs themselves. We suggest it be in correspondence to the L2 gas consumed by the transaction.
+This section will be expanded upon in future revisions.
+
+\subsection{Sovereign and Optimistic Paths}
+Advancing the state commitment of a vProg interacting with others will typically require stitching together transactions of several vProgs. Indeed provers submit proofs of conditional batches on-chain, and these proven conditionals are in principle usable by all. However the individual conditionals are not transparent on-chain themselves. Hence to make use of the conditionals proven by another prover, provers must communicate with each other at the time of stitching to allow deciphering and extracting of the individual predicates within a batch. We refer to this flow as the optimistic path. It is emphasized that the speed of this communication only affects proof latency, not the sequencing latency of the system.
+
+The sovereign path describes the scenario where, for any reason whatsoever, prover communication malfunctions (either completely, or just suffers unsatisfactory delays). In this path unknown batches by other provers cannot be deciphered. However a prover still has the capabilities to advance the state commitment of their local vProg: the segment to be stitched itself is derivable from the DAG, and the anchoring values are by the design of the system known to the vProg clients (which provers are always expected to run). A prover hence always is capable of submitting conditional proofs for the missing batches by their own, and stitching them together to advance their vProg state commitments. It is noted that required witnesses for foreign commitments are available by design,  as they must have been supplied by the transactions. 
+
+Edge cases regarding pruning may apply though. The details of the sovereign path will be expanded upon in future revisions.
+
+
+
+\section*{Acknowledgments}
+ We wish to thank Hans Moog for extensive discussions regarding atomic composability and zero knowledge technologies.
+
+\appendix
+
+% \section{Transaction Structure}
+% \subsection{TransactionV1}
+% The protocol introduces a new transaction version, \texttt{TransactionV1}, which encapsulates all data required for both L1 validation and L2 execution. The following is an abstract representation.
+
+% \begin{lstlisting}[language=, caption={Abstract Transaction Structure}]
+% // --- Type Definitions ---
+% type vProgID = Pubkey;
+% type AccountID = Pubkey;
+% type Timestamp = u64;
+% type Calldata = Vec<byte>;
+% type MerkleProof = Vec<byte>;
+% type L1TxInput = ...;
+% type L1TxOutput = ...;
+
+% // --- Main Structure ---
+% struct Transaction {
+%     // Explicit list of accounts being read from.
+%     ReadAccounts: Vec<AccountID>,
+    
+%     // Explicit list of accounts being written to.
+%     WriteAccounts: Vec<AccountID>,
+    
+%     // Witnesses anchor read states to L1-verified commitments.
+%     Witnesses: Vec<Witness>,
+    
+%     // Gas payments for each vProg executing a write.
+%     GasPayments: map<vProgID, Gas>,
+%     // scope Gas payments for each vProg executing a write.
+%     ScopeGasPayments: map<vProgID, Gas>,
+%     // Contains execution instructions (function calls, args).
+%     Payload: Calldata,
+
+%     // --- V0 Compatible Fields ---
+%     L1Inputs: Vec<L1TxInput>,
+%     L1Outputs: Vec<L1TxOutput>,
+% }
+
+% struct Witness {
+%     Account: AccountID,
+%     // The L1 timestamp of the state commitment being proven against.
+%     StateTimestamp: Timestamp,
+%     Proof: MerkleProof,
+% }
+% \end{lstlisting}
+
+\section{ TransactionV1 Rust Specification}
+To illustrate a potential concrete implementation of the abstract transaction structure, this section includes a detailed Rust specification for `TransactionV1'.
+
+\begin{lstlisting}[language=Rust, caption={TransactionV1 Rust Structure}]
+// Type alias for a 32-byte public key used for IDs.
+type Pubkey = [u8; 32];
+
+// Structure for transactions' provided anchors
+struct Anchor {
+    /// L1 logical time t' of C^{p}_{t'}.
+     state_timestamp: u64,
+     
+    /// Anchor logical time t <= t' of C^{p}_{t'} s.t. t is an intermediate state of C^{p}_{t'}
+     anchor_timestamp: u64,
+
+    /// Canonical, opaque encoding of the account state value at (p, account, t).
+    value: Vec<u8>,
+
+    /// Merkle inclusion proof that (account, value, t) is in C^{p}_{t'}.
+    proof: MerkleWitness,
+}
+
+// Main transaction structure for vProg interactions.
+struct TransactionV1 {
+    version: 1,
+
+    // --- V1 Fields ---
+    
+    // A single registry of all unique vProg and account Pubkeys referenced in the transaction.
+    // Max 128 items.
+    keys: Vec<Pubkey>, 
+
+    // Maps a vProg index from `keys' to a list of account indices from `keys'.
+    relations: Vec<(u8, Vec<u8>)>,
+
+    // Indices into `keys' identifying vProgs that are written to.
+    writing_vProgs: Vec<u8>,
+    
+    // Indices into `keys' identifying vProgs that are only read from.
+    readonly_vProgs: Vec<u8>,
+
+    // Indices into `keys' identifying accounts that are written to.
+    write_accounts: Vec<u8>,
+
+    // Indices into `keys' identifying accounts that are only read from.
+    readonly_accounts: Vec<u8>,
+
+    // Anchors for scope calculation. The `u8' is an index into `keys'.
+    anchors: Vec<(u8, Anchor)>,
+
+    // Maps a gas commitment to each vProg in `writing_vProgs'.
+    gases: Vec<(u8, u64)>,
+
+    // Maps a scope gas commitment to each vProg in `writing_vProgs'.
+    scope_gases: Vec<(u8, u64)>,
+    
+
+    // --- V0 Compatible Fields ---
+    inputs: Vec<TransactionInput>,
+    outputs: Vec<TransactionOutput>,
+    lock_time: u64,
+    payload: Vec<u8>,
+}
+\end{lstlisting}
+
+\end{document}
